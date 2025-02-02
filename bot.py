@@ -38,7 +38,8 @@ logging.basicConfig(level=logging.INFO)
 ###############################################################################
 # ИНИЦИАЛИЗАЦИЯ
 ###############################################################################
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+from aiogram.client.bot import DefaultBotProperties
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
 # Структура хранения данных пользователя:
