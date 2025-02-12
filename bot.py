@@ -17,7 +17,7 @@ BOT_TOKEN = "7691178570:AAHVzzPYPbC5bbnp9mpHrEbVxjmgtjCDYNc"
 CHANNEL_ID = -1002193668243  # ID канала, на который нужно подписаться
 CHANNEL_INVITE_LINK = "https://t.me/+RjNhwct5B1wxOTEy"
 REVIEWS_CHANNEL_LINK = "https://t.me/+VuaLFy5u-twwODRi"
-ORDER_BOT_LINK = "https://t.me/Alcoholgpt_bot"
+ORDER_BOT_LINK = "https://t.me/deliverygpt_bot"
 PHOTO_FILE_ID = "AgACAgIAAxkBAAMbZ51movDjAAGyhx8jtw2Up1MUdB2VAAJu7zEbEF3pSBJhmyAAAfnKfwEAAwIAA3gAAzYE"
 
 # ID закрытого канала для отправки собранных данных пользователей
