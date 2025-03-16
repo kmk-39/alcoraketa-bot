@@ -1,22 +1,25 @@
 import asyncio
 import logging
 import re
+import time
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, KeyboardButton,
     ReplyKeyboardRemove
 )
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.throttling import ThrottlingMiddleware
 
 ###############################################################################
 # КОНФИГУРАЦИЯ
 ###############################################################################
-BOT_TOKEN = "7691178570:AAHVzzPYPbC5bbnp9mpHrEbVxjmgtjCDYNc"
-
+BOT_TOKEN = "7964880890:AAEnKzFiMKM3Ft8_5tBuJE5asx9Q2YXih3M"
 CHANNEL_ID = -1002193668243  # ID канала, на который нужно подписаться
 CHANNEL_INVITE_LINK = "https://t.me/+RjNhwct5B1wxOTEy"
-REVIEWS_CHANNEL_LINK = "https://t.me/+VuaLFy5u-twwODRi"
+REVIEWS_CHANNEL_LINK = "https://t.me/+xxFCoslNh5gwY2Vi"
 ORDER_BOT_LINK = "https://t.me/deliverygpt_bot"
 PHOTO_FILE_ID = "AgACAgIAAxkBAAMbZ51movDjAAGyhx8jtw2Up1MUdB2VAAJu7zEbEF3pSBJhmyAAAfnKfwEAAwIAA3gAAzYE"
 
@@ -42,18 +45,13 @@ from aiogram.client.bot import DefaultBotProperties
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
-# Структура хранения данных пользователя:
-# users_data[user_id] = {
-#    "last_activity": float,
-#    "inactivity_msg_sent": bool,
-#    "subscribed_at": float,      # время подписки (0 если не подписался)
-#    "gift_msg_sent": bool,       # флаг отправки подарочного сообщения
-#    "collect_state": None | "phone" | "email",  # этап сбора данных
-#    "promo_received": bool,      # получил ли пользователь уже промокод
-#    "phone": str,                # собранный номер телефона
-#    "email": str                 # собранный email
-# }
+# Структура хранения данных пользователя
 users_data = {}
+
+# Определение состояний для FSM
+class CollectData(StatesGroup):
+    phone = State()
+    email = State()
 
 def update_user_activity(user_id: int):
     if user_id not in users_data:
@@ -62,12 +60,9 @@ def update_user_activity(user_id: int):
             "inactivity_msg_sent": False,
             "subscribed_at": 0,
             "gift_msg_sent": False,
-            "collect_state": None,
-            "promo_received": False,
-            "phone": "",
-            "email": ""
+            "promo_received": False
         }
-    users_data[user_id]["last_activity"] = asyncio.get_event_loop().time()
+    users_data[user_id]["last_activity"] = time.time()
 
 async def check_subscription(user_id: int) -> bool:
     try:
@@ -75,15 +70,17 @@ async def check_subscription(user_id: int) -> bool:
         return member.status in ["member", "administrator", "creator"]
     except Exception as e:
         logging.error(f"Ошибка проверки подписки для {user_id}: {e}")
+        await bot.send_message(user_id, "Ошибка при проверке подписки. Попробуй позже.")
         return False
 
 ###############################################################################
 # ОБРАБОТЧИК /start
 ###############################################################################
 @dp.message(CommandStart())
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     update_user_activity(user_id)
+    await state.clear()  # Очищаем состояние
     user_firstname = message.from_user.first_name or "друг"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -106,64 +103,16 @@ async def cmd_start(message: types.Message):
     await message.answer_photo(photo=PHOTO_FILE_ID, caption=caption_text, reply_markup=keyboard)
 
 ###############################################################################
-# ОБРАБОТЧИК ЛЮБОГО СООБЩЕНИЯ (обновление активности и сбор данных)
+# ОБРАБОТЧИК /help
 ###############################################################################
-@dp.message()
-async def any_message_handler(message: types.Message):
-    user_id = message.from_user.id
-    update_user_activity(user_id)
-    state = users_data[user_id]["collect_state"]
-    
-    if state == "phone":
-        if message.contact and message.contact.phone_number:
-            phone = message.contact.phone_number
-            users_data[user_id]["phone"] = phone
-            await message.answer(f"Принял твой номер телефона: {phone}")
-            users_data[user_id]["collect_state"] = "email"
-            await ask_email(message)
-        else:
-            text = message.text.strip()
-            pattern = r'^[\d+()\-\s]{5,}$'
-            if re.match(pattern, text):
-                users_data[user_id]["phone"] = text
-                await message.answer(f"Принял твой номер телефона: {text}")
-                users_data[user_id]["collect_state"] = "email"
-                await ask_email(message)
-            else:
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Назад", callback_data="cancel_collect")]
-                ])
-                await message.answer("Неверный формат номера телефона. Пожалуйста, проверь и введи снова или нажми 'Назад'.", reply_markup=kb)
-    elif state == "email":
-        text = message.text.strip()
-        email_pattern = r'^[^@]+@[^@]+\.[^@]+$'
-        if re.match(email_pattern, text):
-            users_data[user_id]["email"] = text
-            await message.answer("Отлично! Email принят.")
-            if not users_data[user_id]["promo_received"]:
-                promo_message = (
-                    "Лови свой подарок! 🎁 Скидка 10% на следующий заказ! Назови оператору промокод <tg-spoiler>ПОДПИСКА24</tg-spoiler>"
-                )
-                await message.answer(promo_message)
-                users_data[user_id]["promo_received"] = True
-                # Отправка собранных данных в закрытый канал
-                user_info = (
-                    f"Пользователь: @{message.from_user.username or message.from_user.first_name}\n"
-                    f"Номер: {users_data[user_id]['phone']}\n"
-                    f"Email: {users_data[user_id]['email']}"
-                )
-                try:
-                    await bot.send_message(chat_id=PRIVATE_INFO_CHANNEL_ID, text=user_info)
-                except Exception as e:
-                    logging.error(f"Ошибка отправки информации для {user_id}: {e}")
-            users_data[user_id]["collect_state"] = None
-        else:
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Назад", callback_data="cancel_collect")]
-            ])
-            await message.answer("Неверный формат email. Пожалуйста, введи корректный email или нажми 'Назад'.", reply_markup=kb)
-    else:
-        pass
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    help_text = (
+        "Доступные команды:\n"
+        "/start - Начать взаимодействие с ботом\n"
+        "/help - Показать это сообщение"
+    )
+    await message.answer(help_text)
 
 ###############################################################################
 # ОБРАБОТЧИК КНОПКИ "Я ПОДПИСАЛСЯ"
@@ -173,7 +122,7 @@ async def on_subscribed_button(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     update_user_activity(user_id)
     if await check_subscription(user_id):
-        users_data[user_id]["subscribed_at"] = asyncio.get_event_loop().time()
+        users_data[user_id]["subscribed_at"] = time.time()
         text_subscribed = "👀 Вижу нового подписчика!\n\nСпеши оформить заказ 👇"
         keyboard_order = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🥂 Заказать", url=ORDER_BOT_LINK)],
@@ -189,23 +138,12 @@ async def on_subscribed_button(callback_query: types.CallbackQuery):
 # ОБРАБОТЧИК КНОПКИ "ДА, ХОЧУ ПОДАРОК!"
 ###############################################################################
 @dp.callback_query(F.data == "get_gift")
-async def on_get_gift(callback_query: types.CallbackQuery):
+async def on_get_gift(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     update_user_activity(user_id)
-    users_data[user_id]["collect_state"] = "phone"
+    await state.set_state(CollectData.phone)
     await callback_query.answer()
     await ask_phone(callback_query.message)
-
-###############################################################################
-# ОБРАБОТЧИК КНОПКИ "НАЗАД"
-###############################################################################
-@dp.callback_query(F.data == "cancel_collect")
-async def on_cancel_collect(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    update_user_activity(user_id)
-    users_data[user_id]["collect_state"] = None
-    await callback_query.message.answer("Ввод данных отменён.", reply_markup=ReplyKeyboardRemove())
-    await callback_query.answer()
 
 ###############################################################################
 # ФУНКЦИИ ДЛЯ ЗАПРОСА ТЕЛЕФОНА И EMAIL
@@ -214,7 +152,7 @@ async def ask_phone(message: types.Message):
     kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Отправить контакт", request_contact=True)],
-            [KeyboardButton(text="Назад", callback_data="cancel_collect")]
+            [KeyboardButton(text="Назад")]
         ],
         resize_keyboard=True,
         one_time_keyboard=True
@@ -224,12 +162,75 @@ async def ask_phone(message: types.Message):
 async def ask_email(message: types.Message):
     kb = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Назад", callback_data="cancel_collect")]
+            [KeyboardButton(text="Назад")]
         ],
         resize_keyboard=True,
         one_time_keyboard=True
     )
     await message.answer("Подарок уже близко, осталось совсем чуть-чуть🤏🏼 Напиши свой емэйл и подарок твой! 🎁", reply_markup=kb)
+
+###############################################################################
+# ОБРАБОТЧИК СООБЩЕНИЙ В СОСТОЯНИИ СБОРА ДАННЫХ
+###############################################################################
+@dp.message(CollectData.phone)
+async def process_phone(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    update_user_activity(user_id)
+    if message.contact:
+        phone = message.contact.phone_number
+        await state.update_data(phone=phone)
+        await message.answer(f"Принял твой номер телефона: {phone}", reply_markup=ReplyKeyboardRemove())
+        await state.set_state(CollectData.email)
+        await ask_email(message)
+    elif message.text == "Назад":
+        await state.clear()
+        await message.answer("Ввод данных отменён.", reply_markup=ReplyKeyboardRemove())
+    else:
+        text = message.text.strip()
+        phone_pattern = r'^\+?\d{9,15}$'
+        if re.match(phone_pattern, text):
+            await state.update_data(phone=text)
+            await message.answer(f"Принял твой номер телефона: {text}", reply_markup=ReplyKeyboardRemove())
+            await state.set_state(CollectData.email)
+            await ask_email(message)
+        else:
+            await message.answer("Неверный формат номера телефона. Пожалуйста, проверь и введи снова или нажми 'Назад'.")
+
+@dp.message(CollectData.email)
+async def process_email(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    update_user_activity(user_id)
+    if message.text == "Назад":
+        await state.set_state(CollectData.phone)
+        await ask_phone(message)
+    else:
+        text = message.text.strip()
+        email_pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
+        if re.match(email_pattern, text):
+            await state.update_data(email=text)
+            data = await state.get_data()
+            phone = data.get("phone", "")
+            email = data.get("email", "")
+            await message.answer("Отлично! Email принят.", reply_markup=ReplyKeyboardRemove())
+            if not users_data[user_id]["promo_received"]:
+                promo_message = (
+                    "Лови свой подарок! 🎁 Скидка 10% на следующий заказ! Назови оператору промокод <tg-spoiler>ПОДПИСКА24</tg-spoiler>"
+                )
+                await message.answer(promo_message)
+                users_data[user_id]["promo_received"] = True
+                # Отправка собранных данных в закрытый канал
+                user_info = (
+                    f"Пользователь: @{message.from_user.username or message.from_user.first_name}\n"
+                    f"Номер: {phone}\n"
+                    f"Email: {email}"
+                )
+                try:
+                    await bot.send_message(chat_id=PRIVATE_INFO_CHANNEL_ID, text=user_info)
+                except Exception as e:
+                    logging.error(f"Ошибка отправки информации для {user_id}: {e}")
+            await state.clear()
+        else:
+            await message.answer("Неверный формат email. Пожалуйста, введи корректный email или нажми 'Назад'.")
 
 ###############################################################################
 # ФУНКЦИЯ: ОТПРАВКА ПОДАРОЧНОГО СООБЩЕНИЯ ЧЕРЕЗ 24 ЧАСА
@@ -252,7 +253,7 @@ async def send_gift_message(user_id: int):
 ###############################################################################
 async def background_tasks():
     while True:
-        now = asyncio.get_event_loop().time()
+        now = time.time()
         for user_id, data in list(users_data.items()):
             # Если пользователь не подписался – отправляем сообщение о бездействии
             if not data["inactivity_msg_sent"] and data.get("subscribed_at", 0) == 0:
@@ -278,6 +279,8 @@ async def background_tasks():
 # ЗАПУСК БОТА
 ###############################################################################
 async def main():
+    # Добавляем middleware для защиты от спама
+    dp.message.middleware(ThrottlingMiddleware(rate_limit=1, rate_period=1))
     asyncio.create_task(background_tasks())
     await dp.start_polling(bot)
 
