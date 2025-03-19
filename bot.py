@@ -22,6 +22,8 @@ load_dotenv()
 # КОНФИГУРАЦИЯ (через переменные окружения)
 ###############################################################################
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не найден в .env файле!")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 CHANNEL_INVITE_LINK = os.getenv("CHANNEL_INVITE_LINK")
 REVIEWS_CHANNEL_LINK = os.getenv("REVIEWS_CHANNEL_LINK")
@@ -46,7 +48,6 @@ bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
 dp = Dispatcher()
 
 # Глобальный словарь для хранения данных пользователей
-# Если бот рассчитан на большое число пользователей – лучше использовать базу данных.
 users_data = {}
 
 # Определение состояний для FSM
@@ -188,13 +189,11 @@ async def ask_email(message: types.Message):
 async def process_phone(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     update_user_activity(user_id)
-    # Обработка кнопки "Назад"
     if message.text and message.text.strip() == "Назад":
         await state.clear()
         await message.answer("Ввод отменён.", reply_markup=ReplyKeyboardRemove())
         return
 
-    # Если пользователь отправил контакт
     if message.contact:
         phone = message.contact.phone_number
     else:
@@ -271,7 +270,6 @@ async def background_tasks():
         now = time.time()
         tasks = []
         for user_id, data in list(users_data.items()):
-            # Если пользователь не совершил подписку и не получал уведомление о бездействии
             if not data["inactivity_msg_sent"] and data.get("subscribed_at", 0) == 0:
                 if now - data["last_activity"] > INACTIVITY_LIMIT:
                     inactivity_text = (
@@ -280,7 +278,6 @@ async def background_tasks():
                     )
                     tasks.append(bot.send_message(chat_id=user_id, text=inactivity_text))
                     data["inactivity_msg_sent"] = True
-            # Если пользователь подписался, но ещё не получил подарок и не получил промокод
             if data.get("subscribed_at", 0) > 0 and not data["gift_msg_sent"] and not data.get("promo_received", False):
                 time_since_sub = now - data["subscribed_at"]
                 if time_since_sub >= GIFT_DELAY:
@@ -297,7 +294,6 @@ async def background_tasks():
 # ЗАПУСК БОТА
 ###############################################################################
 async def main():
-    # Запуск фоновой задачи
     asyncio.create_task(background_tasks())
     await dp.start_polling(bot)
 
