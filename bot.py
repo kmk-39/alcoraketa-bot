@@ -33,9 +33,43 @@ PHOTO_FILE_ID = os.getenv("PHOTO_FILE_ID")
 PRIVATE_INFO_CHANNEL_ID = int(os.getenv("PRIVATE_INFO_CHANNEL_ID"))
 
 # Параметры таймингов
-INACTIVITY_LIMIT = 600          # 10 минут
+# Для неподписанных пользователей
+INACTIVITY_LIMITS_NOT_SUBSCRIBED = [600, 1500, 86400]  # 10 минут, 25 минут, 24 часа
+# Для зависания на сборе данных
+INACTIVITY_LIMIT_DATA_COLLECTION = 300  # 5 минут
+# Для подписанных пользователей, отказавшихся от подарка
+INACTIVITY_LIMITS_SUBSCRIBED_NO_PROMO = [
+    86400,      # 1 день
+    259200,     # 3 дня
+    604800,     # 1 неделя
+    1209600,    # 2 недели
+    2592000,    # 1 месяц
+    7776000,    # 3 месяца
+    15552000    # 6 месяцев
+]
 CHECK_INACTIVITY_INTERVAL = 30  # Проверка каждые 30 секунд
-GIFT_DELAY = 86400              # 24 часа
+GIFT_DELAY = 86400  # 24 часа
+
+# Кликбейтные уведомления для неподписанных пользователей
+INACTIVITY_MESSAGES_NOT_SUBSCRIBED = [
+    "🔔 Осталось совсем чуть-чуть! Подпишись на наш канал и сделай свой первый заказ! 🚀",
+    "⏳ Ты всё ещё с нами? Подпишись на канал, чтобы не упустить лучшие предложения! 🥂",
+    "🎉 Не упусти шанс! Подпишись на канал и получи доступ к эксклюзивным скидкам! 🍾"
+]
+
+# Напоминание при зависании на сборе данных
+INACTIVITY_MESSAGE_DATA_COLLECTION = "🎁 Подарок уже так близко! Заверши ввод данных, чтобы его забрать! ✨"
+
+# Кликбейтные уведомления для подписанных пользователей, отказавшихся от подарка
+INACTIVITY_MESSAGES_SUBSCRIBED_NO_PROMO = [
+    "🚀 Оплата прошла успешно! Ваш заказ уже в пути! 🎉\n\nОй, кажется, я перепутал! 😅 Не вижу твоего заказа... Но это легко исправить — оформи заказ прямо сейчас! 🥂",
+    "📦 Ваш заказ доставлен! Проверьте, всё ли на месте! 🚚\n\nУпс, моя ошибка! 😳 Заказа пока нет, но я мечтаю, чтобы ты его оформил! Скорее закажи! 🍾",
+    "🎉 Спасибо за заказ, оплата прошла! Скоро всё будет у вас! ✨\n\nИзвини, кажется, здесь ошибка... 😅 А я уже обрадовался! Не огорчай меня так, сделай заказ! 🚀",
+    "🚚 Ваш заказ оформлен и оплачен! Спасибо за выбор нас! Курьер выезжает! 🎉\n\nВозможно, мы поторопились? 😳 Похоже, заказа нет. Подпишись и сделай заказ! 🥂",
+    "🥳 Ваш заказ уже едет к вам! Ожидайте курьера! 🚚\n\nОй, кажется, я ошибся! 😜 Заказа пока нет, но я так хочу, чтобы ты его сделал! Оформи заказ и получи бонус! 🥂",
+    "🍾 Оплата за ваш заказ прошла! Скоро всё будет у вас! 🎉\n\nУпс, перепутал! 😳 Заказа нет, но это мои мечты! Давай сделаем их реальностью — оформи заказ! 🍾",
+    "🏆 Ваш заказ уже в пути! Проверьте статус доставки! 🚀\n\nОх, моя ошибка! 😅 Не вижу заказа, но я так хочу, чтобы ты его сделал! Оформи заказ и получи скидку! ✨"
+]
 
 ###############################################################################
 # ЛОГИРОВАНИЕ
@@ -61,10 +95,13 @@ def update_user_activity(user_id: int):
     if user_id not in users_data:
         users_data[user_id] = {
             "last_activity": time.time(),
-            "inactivity_msg_sent": False,
+            "inactivity_messages_not_subscribed": [False] * len(INACTIVITY_LIMITS_NOT_SUBSCRIBED),  # Статус отправки для неподписанных
+            "inactivity_message_data_collection_sent": False,  # Статус отправки при зависании на сборе данных
+            "inactivity_messages_subscribed_no_promo": [False] * len(INACTIVITY_LIMITS_SUBSCRIBED_NO_PROMO),  # Статус отправки для подписанных без подарка
             "subscribed_at": 0,
             "gift_msg_sent": False,
-            "promo_received": False
+            "promo_received": False,
+            "last_state": None  # Для отслеживания состояния FSM
         }
     else:
         users_data[user_id]["last_activity"] = time.time()
@@ -125,7 +162,10 @@ async def cmd_help(message: types.Message):
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    update_user_activity(user_id)
     await state.clear()
+    users_data[user_id]["last_state"] = None
     await message.answer("Действие отменено.", reply_markup=ReplyKeyboardRemove())
 
 ###############################################################################
@@ -156,6 +196,7 @@ async def on_get_gift(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
     update_user_activity(user_id)
     await state.set_state(CollectData.phone)
+    users_data[user_id]["last_state"] = "CollectData.phone"
     await callback_query.answer()
     await ask_phone(callback_query.message)
 
@@ -190,8 +231,10 @@ async def ask_email(message: types.Message):
 async def process_phone(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     update_user_activity(user_id)
+    users_data[user_id]["last_state"] = "CollectData.phone"
     if message.text and message.text.strip() == "Назад":
         await state.clear()
+        users_data[user_id]["last_state"] = None
         await message.answer("Ввод отменён.", reply_markup=ReplyKeyboardRemove())
         return
 
@@ -208,14 +251,17 @@ async def process_phone(message: types.Message, state: FSMContext):
     await state.update_data(phone=phone)
     await message.answer(f"Принял телефон: {phone}", reply_markup=ReplyKeyboardRemove())
     await state.set_state(CollectData.email)
+    users_data[user_id]["last_state"] = "CollectData.email"
     await ask_email(message)
 
 @dp.message(CollectData.email)
 async def process_email(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     update_user_activity(user_id)
+    users_data[user_id]["last_state"] = "CollectData.email"
     if message.text.strip() == "Назад":
         await state.set_state(CollectData.phone)
+        users_data[user_id]["last_state"] = "CollectData.phone"
         await ask_phone(message)
         return
 
@@ -244,6 +290,7 @@ async def process_email(message: types.Message, state: FSMContext):
             except Exception as e:
                 logging.error(f"Ошибка отправки информации для {user_id}: {e}")
         await state.clear()
+        users_data[user_id]["last_state"] = None
     else:
         await message.answer("Неверный формат email. Введи снова или нажми 'Назад'.")
 
@@ -271,19 +318,34 @@ async def background_tasks():
         now = time.time()
         tasks = []
         for user_id, data in list(users_data.items()):
-            if not data["inactivity_msg_sent"] and data.get("subscribed_at", 0) == 0:
-                if now - data["last_activity"] > INACTIVITY_LIMIT:
-                    inactivity_text = (
-                        "Ваш заказ оформлен и оплачен! Спасибо за выбор нас! Курьер выезжает!\n\n"
-                        "Возможно, мы поторопились? Похоже, заказа нет. Подпишись и сделай заказ! 🥂"
-                    )
-                    tasks.append(bot.send_message(chat_id=user_id, text=inactivity_text))
-                    data["inactivity_msg_sent"] = True
+            # Проверка бездействия для неподписанных пользователей
+            if data.get("subscribed_at", 0) == 0:
+                for i, limit in enumerate(INACTIVITY_LIMITS_NOT_SUBSCRIBED):
+                    if not data["inactivity_messages_not_subscribed"][i] and (now - data["last_activity"] > limit):
+                        tasks.append(bot.send_message(chat_id=user_id, text=INACTIVITY_MESSAGES_NOT_SUBSCRIBED[i]))
+                        data["inactivity_messages_not_subscribed"][i] = True
+
+            # Проверка бездействия на этапе сбора данных
+            if data.get("last_state") in ["CollectData.phone", "CollectData.email"]:
+                if not data["inactivity_message_data_collection_sent"] and (now - data["last_activity"] > INACTIVITY_LIMIT_DATA_COLLECTION):
+                    tasks.append(bot.send_message(chat_id=user_id, text=INACTIVITY_MESSAGE_DATA_COLLECTION))
+                    data["inactivity_message_data_collection_sent"] = True
+
+            # Проверка подарочного сообщения для подписанных пользователей
             if data.get("subscribed_at", 0) > 0 and not data["gift_msg_sent"] and not data.get("promo_received", False):
                 time_since_sub = now - data["subscribed_at"]
                 if time_since_sub >= GIFT_DELAY:
                     tasks.append(send_gift_message(user_id))
                     data["gift_msg_sent"] = True
+
+            # Проверка кликбейтных сообщений для подписанных пользователей, отказавшихся от подарка
+            if data.get("subscribed_at", 0) > 0 and not data.get("promo_received", False):
+                time_since_sub = now - data["subscribed_at"]
+                for i, limit in enumerate(INACTIVITY_LIMITS_SUBSCRIBED_NO_PROMO):
+                    if not data["inactivity_messages_subscribed_no_promo"][i] and (time_since_sub > limit):
+                        tasks.append(bot.send_message(chat_id=user_id, text=INACTIVITY_MESSAGES_SUBSCRIBED_NO_PROMO[i]))
+                        data["inactivity_messages_subscribed_no_promo"][i] = True
+
         if tasks:
             try:
                 await asyncio.gather(*tasks)
