@@ -37,8 +37,8 @@ PRIVATE_INFO_CHANNEL_ID = int(os.getenv("PRIVATE_INFO_CHANNEL_ID"))
 INACTIVITY_LIMITS_NOT_SUBSCRIBED = [600, 1500, 86400]  # 10 минут, 25 минут, 24 часа
 # Для зависания на сборе данных
 INACTIVITY_LIMIT_DATA_COLLECTION = 300  # 5 минут
-# Для подписанных пользователей, отказавшихся от подарка
-INACTIVITY_LIMITS_SUBSCRIBED_NO_PROMO = [
+# Для подписанных пользователей (кликбейтные уведомления)
+INACTIVITY_LIMITS_SUBSCRIBED = [
     86400,      # 1 день
     259200,     # 3 дня
     604800,     # 1 неделя
@@ -50,6 +50,9 @@ INACTIVITY_LIMITS_SUBSCRIBED_NO_PROMO = [
 CHECK_INACTIVITY_INTERVAL = 30  # Проверка каждые 30 секунд
 GIFT_DELAY = 86400  # 24 часа
 
+# Антиспам: минимальный интервал между сообщениями от одного пользователя (в секундах)
+ANTI_SPAM_INTERVAL = 1  # 1 секунда
+
 # Кликбейтные уведомления для неподписанных пользователей
 INACTIVITY_MESSAGES_NOT_SUBSCRIBED = [
     "🔔 Осталось совсем чуть-чуть! Подпишись на наш канал и сделай свой первый заказ! 🚀",
@@ -60,8 +63,8 @@ INACTIVITY_MESSAGES_NOT_SUBSCRIBED = [
 # Напоминание при зависании на сборе данных
 INACTIVITY_MESSAGE_DATA_COLLECTION = "🎁 Подарок уже так близко! Заверши ввод данных, чтобы его забрать! ✨"
 
-# Кликбейтные уведомления для подписанных пользователей, отказавшихся от подарка
-INACTIVITY_MESSAGES_SUBSCRIBED_NO_PROMO = [
+# Кликбейтные уведомления для подписанных пользователей
+INACTIVITY_MESSAGES_SUBSCRIBED = [
     "🚀 Оплата прошла успешно! Ваш заказ уже в пути! 🎉\n\nОй, кажется, я перепутал! 😅 Не вижу твоего заказа... Но это легко исправить — оформи заказ прямо сейчас! 🥂",
     "📦 Ваш заказ доставлен! Проверьте, всё ли на месте! 🚚\n\nУпс, моя ошибка! 😳 Заказа пока нет, но я мечтаю, чтобы ты его оформил! Скорее закажи! 🍾",
     "🎉 Спасибо за заказ, оплата прошла! Скоро всё будет у вас! ✨\n\nИзвини, кажется, здесь ошибка... 😅 А я уже обрадовался! Не огорчай меня так, сделай заказ! 🚀",
@@ -85,6 +88,9 @@ dp = Dispatcher()
 # Глобальный словарь для хранения данных пользователей
 users_data = {}
 
+# Словарь для антиспама: хранит время последнего обработанного сообщения для каждого пользователя
+last_message_time = {}
+
 # Определение состояний для FSM
 class CollectData(StatesGroup):
     phone = State()
@@ -97,7 +103,7 @@ def update_user_activity(user_id: int):
             "last_activity": time.time(),
             "inactivity_messages_not_subscribed": [False] * len(INACTIVITY_LIMITS_NOT_SUBSCRIBED),  # Статус отправки для неподписанных
             "inactivity_message_data_collection_sent": False,  # Статус отправки при зависании на сборе данных
-            "inactivity_messages_subscribed_no_promo": [False] * len(INACTIVITY_LIMITS_SUBSCRIBED_NO_PROMO),  # Статус отправки для подписанных без подарка
+            "inactivity_messages_subscribed": [False] * len(INACTIVITY_LIMITS_SUBSCRIBED,  # Статус отправки для подписанных
             "subscribed_at": 0,
             "gift_msg_sent": False,
             "promo_received": False,
@@ -138,12 +144,24 @@ def get_main_keyboard(user_firstname: str):
     ])
     return caption_text, keyboard
 
+# Антиспам-фильтр
+async def anti_spam_filter(user_id: int) -> bool:
+    """Проверяет, прошло ли достаточно времени с последнего сообщения пользователя."""
+    current_time = time.time()
+    last_time = last_message_time.get(user_id, 0)
+    if current_time - last_time < ANTI_SPAM_INTERVAL:
+        return False  # Слишком быстро, игнорируем
+    last_message_time[user_id] = current_time
+    return True  # Можно обрабатывать
+
 ###############################################################################
 # ОБРАБОТЧИКИ КОМАНД
 ###############################################################################
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if not await anti_spam_filter(user_id):
+        return  # Игнорируем, если сообщение пришло слишком быстро
     update_user_activity(user_id)
     await state.clear()
     user_firstname = message.from_user.first_name or "друг"
@@ -152,6 +170,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
+    user_id = message.from_user.id
+    if not await anti_spam_filter(user_id):
+        return
     help_text = (
         "Доступные команды:\n"
         "/start - Начать взаимодействие с ботом\n"
@@ -163,6 +184,8 @@ async def cmd_help(message: types.Message):
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if not await anti_spam_filter(user_id):
+        return
     update_user_activity(user_id)
     await state.clear()
     users_data[user_id]["last_state"] = None
@@ -174,6 +197,8 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "i_subscribed")
 async def on_subscribed_button(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
+    if not await anti_spam_filter(user_id):
+        return
     update_user_activity(user_id)
     if await check_subscription(user_id):
         users_data[user_id]["subscribed_at"] = time.time()
@@ -194,6 +219,8 @@ async def on_subscribed_button(callback_query: types.CallbackQuery, state: FSMCo
 @dp.callback_query(F.data == "get_gift")
 async def on_get_gift(callback_query: types.CallbackQuery, state: FSMContext):
     user_id = callback_query.from_user.id
+    if not await anti_spam_filter(user_id):
+        return
     update_user_activity(user_id)
     await state.set_state(CollectData.phone)
     users_data[user_id]["last_state"] = "CollectData.phone"
@@ -230,6 +257,8 @@ async def ask_email(message: types.Message):
 @dp.message(CollectData.phone)
 async def process_phone(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if not await anti_spam_filter(user_id):
+        return
     update_user_activity(user_id)
     users_data[user_id]["last_state"] = "CollectData.phone"
     if message.text and message.text.strip() == "Назад":
@@ -257,6 +286,8 @@ async def process_phone(message: types.Message, state: FSMContext):
 @dp.message(CollectData.email)
 async def process_email(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
+    if not await anti_spam_filter(user_id):
+        return
     update_user_activity(user_id)
     users_data[user_id]["last_state"] = "CollectData.email"
     if message.text.strip() == "Назад":
@@ -338,13 +369,13 @@ async def background_tasks():
                     tasks.append(send_gift_message(user_id))
                     data["gift_msg_sent"] = True
 
-            # Проверка кликбейтных сообщений для подписанных пользователей, отказавшихся от подарка
-            if data.get("subscribed_at", 0) > 0 and not data.get("promo_received", False):
+            # Проверка кликбейтных сообщений для всех подписанных пользователей
+            if data.get("subscribed_at", 0) > 0:
                 time_since_sub = now - data["subscribed_at"]
-                for i, limit in enumerate(INACTIVITY_LIMITS_SUBSCRIBED_NO_PROMO):
-                    if not data["inactivity_messages_subscribed_no_promo"][i] and (time_since_sub > limit):
-                        tasks.append(bot.send_message(chat_id=user_id, text=INACTIVITY_MESSAGES_SUBSCRIBED_NO_PROMO[i]))
-                        data["inactivity_messages_subscribed_no_promo"][i] = True
+                for i, limit in enumerate(INACTIVITY_LIMITS_SUBSCRIBED):
+                    if not data["inactivity_messages_subscribed"][i] and (time_since_sub > limit):
+                        tasks.append(bot.send_message(chat_id=user_id, text=INACTIVITY_MESSAGES_SUBSCRIBED[i]))
+                        data["inactivity_messages_subscribed"][i] = True
 
         if tasks:
             try:
