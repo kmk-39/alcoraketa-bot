@@ -14,6 +14,7 @@ from aiogram.types import (
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.client.default import DefaultBotProperties
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -44,7 +45,7 @@ logging.basicConfig(level=logging.INFO)
 ###############################################################################
 # ИНИЦИАЛИЗАЦИЯ
 ###############################################################################
-bot = Bot(token=BOT_TOKEN, parse_mode='HTML')
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
 # Глобальный словарь для хранения данных пользователей
@@ -76,7 +77,7 @@ async def check_subscription(user_id: int) -> bool:
     except Exception as e:
         logging.error(f"Ошибка проверки подписки для {user_id}: {e}")
         try:
-            await bot.send_message(user_id, "Ошибка при проверке подписки. Попробуй позже.")
+            await bot.send_message(user_id, "Ошибка при проверки подписки. Попробуй позже.")
         except Exception as send_err:
             logging.error(f"Ошибка отправки сообщения пользователю {user_id}: {send_err}")
         return False
